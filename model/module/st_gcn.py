@@ -389,9 +389,10 @@ class st_gcn(nn.Module):
         self.source_nodes = self.graph.source_nodes
         self.target_nodes = self.graph.target_nodes
 
-        self.dgconv = nn.Conv2d(in_channels * 3, in_channels, 1)
+        self.dgconv1 = nn.Conv2d(in_channels * 3, in_channels, 1)
+        self.dgconv2 = nn.Conv2d(in_channels * 3, in_channels, 1)
 
-        self.tcn = nn.Sequential(
+        self.tcn1 = nn.Sequential(
             nn.BatchNorm2d(in_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(
@@ -405,20 +406,32 @@ class st_gcn(nn.Module):
             nn.Dropout(dropout, inplace=True),
         )
 
-        self.relu = nn.ReLU(inplace=True)
+        self.tcn2 = nn.Sequential(
+            nn.BatchNorm2d(in_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(
+                in_channels,
+                out_channels,
+                (kernel_size[0], 1),
+                (stride, 1),
+                padding,
+            ),
+            nn.BatchNorm2d(out_channels),
+            nn.Dropout(dropout, inplace=True),
+        )
 
     def forward(self, x, e):
 
         # node update
         x = torch.cat([torch.matmul(e, self.A[0, 1:]), x, torch.matmul(e, self.A[2, 1:])], dim=1)
-        x = self.dgconv(x)
+        x = self.dgconv1(x)
 
         # edge update
         e = torch.cat([x[..., self.source_nodes], e, x[..., self.target_nodes]], dim=1)
-        e = self.dgconv(e)
+        e = self.dgconv2(e)
 
-        x = self.tcn(x)
-        e = self.tcn(e)
+        x = self.tcn1(x)
+        e = self.tcn2(e)
 
         return x, e
 
@@ -471,9 +484,25 @@ class cond_st_gcn(nn.Module):
         self.weight = Parameter(torch.Tensor(num_experts, self.num_node, self.num_node), requires_grad=True)
         nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
 
-        self.dgconv = nn.Conv2d(in_channels * 3, in_channels, 1)
+        self.dgconv1 = nn.Conv2d(in_channels * 3, in_channels, 1)
+        self.dgconv2 = nn.Conv2d(in_channels * 3, in_channels, 1)
+        self.dgconv3 = nn.Conv2d(in_channels * 3, in_channels, 1)
 
-        self.tcn = nn.Sequential(
+        self.tcn1 = nn.Sequential(
+            nn.BatchNorm2d(in_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(
+                in_channels,
+                out_channels,
+                (kernel_size[0], 1),
+                (stride, 1),
+                padding,
+            ),
+            nn.BatchNorm2d(out_channels),
+            nn.Dropout(dropout, inplace=True),
+        )
+
+        self.tcn2 = nn.Sequential(
             nn.BatchNorm2d(in_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(
@@ -493,20 +522,28 @@ class cond_st_gcn(nn.Module):
 
         # node update
         node = torch.cat([torch.matmul(e, self.A[0, 1:]), x, torch.matmul(e, self.A[2, 1:])], dim=1)
-        x = self.dgconv(node)
+        x = self.dgconv1(node)
 
-        # conditional edge update
+        # conditional node update
         pooled_inputs = self._avg_pooling(x)
         routing_weights = self._routing_fn(pooled_inputs)
         cond_e = torch.sum(routing_weights[:, :, None, None] * self.weight, 1, keepdim=True)
-        x = torch.cat([torch.matmul(x, self.relu(cond_e)), x, torch.matmul(x, self.relu(-cond_e))], dim=1)
-        x = self.dgconv(x)
+        cond_e = cond_e * (1 - self.A[1])
+        parent = self.relu(cond_e).clone()
+        parent[parent > 0] = 1
+        parent = parent * (torch.sum(parent, dim=2, keepdim=True) ** (-1))
+        child = self.relu(-cond_e).clone()
+        child[child > 0] = 1
+        child = child * (torch.sum(child, dim=2, keepdim=True) ** (-1))
+
+        x = torch.cat([torch.matmul(x, parent), x, torch.matmul(x, child)], dim=1)
+        x = self.dgconv2(x)
 
         # edge update
         e = torch.cat([x[..., self.source_nodes], e, x[..., self.target_nodes]], dim=1)
-        e = self.dgconv(e)
+        e = self.dgconv3(e)
 
-        x = self.tcn(x)
-        e = self.tcn(e)
+        x = self.tcn1(x)
+        e = self.tcn2(e)
 
         return x, e
