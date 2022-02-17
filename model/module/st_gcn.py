@@ -29,7 +29,7 @@ class Graph:
     def __init__(self,
                  layout='h36m',
                  strategy='directed',
-                 max_hop=4,
+                 max_hop=1,
                  dilation=1):
         self.max_hop = max_hop
         self.dilation = dilation
@@ -55,6 +55,8 @@ class Graph:
                              (0, 7), (7, 8), (8, 9), (9, 10), (8, 11), (11, 12),
                              (12, 13), (8, 14), (14, 15), (15, 16)]
             self.edge = self_link + neighbor_link
+            self.source_nodes = [node[0] for node in neighbor_link]
+            self.target_nodes = [node[1] for node in neighbor_link]
             self.center = 0
 
         elif layout == 'openpose':
@@ -132,11 +134,13 @@ class Graph:
             A = np.stack(A)
             self.A = A
         elif strategy == 'directed':
-            adjacency = np.zeros((self.num_node, self.num_node))
-            adjacency[self.hop_dis == 1] = 1
-            normalize_adjacency = normalize_digraph(adjacency)
-            A = np.zeros((1, self.num_node, self.num_node))
-            A[0] = normalize_adjacency
+            adjacency = np.zeros((2, self.num_node, self.num_node))
+            A = np.zeros((3, self.num_node, self.num_node))
+            adjacency[0][self.hop_dis == 1] = 1
+            A[0] = normalize_digraph(adjacency[0])
+            adjacency[1][self.hop_dis == 0] = 1
+            A[1] = normalize_digraph(adjacency[1])
+            A[2] = normalize_digraph(adjacency[0].T)
             self.A = A
 
         else:
@@ -164,7 +168,7 @@ def get_directed_hop_distance(num_node, edge, max_hop=1):
         if i < j:
             A[i, j] = 1
         else:
-            A[j, i] = 1
+            A[j, i] = 2
 
     # compute hop steps
     hop_dis = np.zeros((num_node, num_node)) + np.inf
@@ -311,8 +315,6 @@ class ConditionalConvTemporalGraphical(nn.Module):
                  bias=True):
         super().__init__()
 
-        self.E = torch.nn.Parameter(torch.FloatTensor(1, num_node, num_node), requires_grad=True)
-
         self.kernel_size = kernel_size
         self.conv = nn.Conv2d(
             in_channels,
@@ -373,20 +375,27 @@ class st_gcn(nn.Module):
                  kernel_size,
                  stride=1,
                  dropout=0,
-                 residual=True):
+                 graph=Graph()):
         super().__init__()
 
         assert len(kernel_size) == 2
         assert kernel_size[0] % 2 == 1
         padding = ((kernel_size[0] - 1) // 2, 0)
 
-        self.gcn = ConvTemporalGraphical(in_channels, out_channels, kernel_size[1])
+        self.graph = graph
+        A = torch.tensor(self.graph.A, dtype=torch.float32, requires_grad=False)
+        self.register_buffer('A', A)
+
+        self.source_nodes = self.graph.source_nodes
+        self.target_nodes = self.graph.target_nodes
+
+        self.dgconv = nn.Conv2d(in_channels * 3, in_channels, 1)
 
         self.tcn = nn.Sequential(
-            nn.BatchNorm2d(out_channels),
+            nn.BatchNorm2d(in_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(
-                out_channels,
+                in_channels,
                 out_channels,
                 (kernel_size[0], 1),
                 (stride, 1),
@@ -396,31 +405,22 @@ class st_gcn(nn.Module):
             nn.Dropout(dropout, inplace=True),
         )
 
-        if not residual:
-            self.residual = lambda x: 0
-
-        elif (in_channels == out_channels) and (stride == 1):
-            self.residual = lambda x: x
-
-        else:
-            self.residual = nn.Sequential(
-                nn.Conv2d(
-                    in_channels,
-                    out_channels,
-                    kernel_size=1,
-                    stride=(stride, 1)),
-                nn.BatchNorm2d(out_channels),
-            )
-
         self.relu = nn.ReLU(inplace=True)
 
-    def forward(self, x, A):
+    def forward(self, x, e):
 
-        res = self.residual(x)
-        x, A = self.gcn(x, A)
-        x = self.tcn(x) + res
+        # node update
+        x = torch.cat([torch.matmul(e, self.A[0, 1:]), x, torch.matmul(e, self.A[2, 1:])], dim=1)
+        x = self.dgconv(x)
 
-        return self.relu(x), A
+        # edge update
+        e = torch.cat([x[..., self.source_nodes], e, x[..., self.target_nodes]], dim=1)
+        e = self.dgconv(e)
+
+        x = self.tcn(x)
+        e = self.tcn(e)
+
+        return x, e
 
 
 class cond_st_gcn(nn.Module):
@@ -451,25 +451,33 @@ class cond_st_gcn(nn.Module):
                  stride=1,
                  dropout=0.,
                  num_experts=16,
-                 residual=True):
+                 graph=Graph()):
         super().__init__()
 
         assert len(kernel_size) == 2
         assert kernel_size[0] % 2 == 1
         padding = ((kernel_size[0] - 1) // 2, 0)
-        num_node = 17
+
+        self.graph = graph
+        self.num_node = self.graph.num_node
+        A = torch.tensor(self.graph.A, dtype=torch.float32, requires_grad=False)
+        self.register_buffer('A', A)
+
+        self.source_nodes = self.graph.source_nodes
+        self.target_nodes = self.graph.target_nodes
+
         self._avg_pooling = functools.partial(F.adaptive_avg_pool2d, output_size=(1, 1))
         self._routing_fn = _routing(in_channels, num_experts, dropout)
-        self.weight = Parameter(torch.Tensor(num_experts, num_node, num_node), requires_grad=True)
+        self.weight = Parameter(torch.Tensor(num_experts, self.num_node, self.num_node), requires_grad=True)
         nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
 
-        self.cond_gcn = ConditionalConvTemporalGraphical(in_channels, out_channels, kernel_size[1])
+        self.dgconv = nn.Conv2d(in_channels * 3, in_channels, 1)
 
         self.tcn = nn.Sequential(
-            nn.BatchNorm2d(out_channels),
+            nn.BatchNorm2d(in_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(
-                out_channels,
+                in_channels,
                 out_channels,
                 (kernel_size[0], 1),
                 (stride, 1),
@@ -479,33 +487,26 @@ class cond_st_gcn(nn.Module):
             nn.Dropout(dropout, inplace=True),
         )
 
-        if not residual:
-            self.residual = lambda x: 0
+        self.relu = nn.ReLU(inplace=False)
 
-        elif (in_channels == out_channels) and (stride == 1):
-            self.residual = lambda x: x
+    def forward(self, x, e):
 
-        else:
-            self.residual = nn.Sequential(
-                nn.Conv2d(
-                    in_channels,
-                    out_channels,
-                    kernel_size=1,
-                    stride=(stride, 1)),
-                nn.BatchNorm2d(out_channels),
-            )
+        # node update
+        node = torch.cat([torch.matmul(e, self.A[0, 1:]), x, torch.matmul(e, self.A[2, 1:])], dim=1)
+        x = self.dgconv(node)
 
-        self.relu = nn.ReLU(inplace=True)
-
-    def forward(self, x, A):
-
-        res = self.residual(x)
-
+        # conditional edge update
         pooled_inputs = self._avg_pooling(x)
         routing_weights = self._routing_fn(pooled_inputs)
-        kernels = torch.sum(routing_weights[:, :, None, None] * self.weight, 1, keepdim=True)
+        cond_e = torch.sum(routing_weights[:, :, None, None] * self.weight, 1, keepdim=True)
+        x = torch.cat([torch.matmul(x, self.relu(cond_e)), x, torch.matmul(x, self.relu(-cond_e))], dim=1)
+        x = self.dgconv(x)
 
-        x, A = self.cond_gcn(x, A, kernels)
-        x = self.tcn(x) + res
+        # edge update
+        e = torch.cat([x[..., self.source_nodes], e, x[..., self.target_nodes]], dim=1)
+        e = self.dgconv(e)
 
-        return self.relu(x), A
+        x = self.tcn(x)
+        e = self.tcn(e)
+
+        return x, e
