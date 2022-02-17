@@ -429,7 +429,7 @@ class cond_st_gcn(nn.Module):
                  out_channels,
                  kernel_size,
                  stride=1,
-                 dropout=0.2,
+                 dropout=0.,
                  num_experts=16,
                  residual=True):
         super().__init__()
@@ -487,6 +487,5 @@ class cond_st_gcn(nn.Module):
 
         x, A = self.cond_gcn(x, A, kernels)
         x = self.tcn(x) + res
-
 
         return self.relu(x), A
