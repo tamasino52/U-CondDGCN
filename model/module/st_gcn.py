@@ -29,14 +29,19 @@ class Graph:
     def __init__(self,
                  layout='h36m',
                  strategy='directed',
-                 max_hop=1,
+                 max_hop=4,
                  dilation=1):
         self.max_hop = max_hop
         self.dilation = dilation
 
         self.get_edge(layout)
-        self.hop_dis = get_hop_distance(
-            self.num_node, self.edge, max_hop=max_hop)
+        if strategy == 'directed':
+            self.hop_dis = get_directed_hop_distance(
+                self.num_node, self.edge, max_hop=max_hop)
+        else:
+            self.hop_dis = get_hop_distance(
+                self.num_node, self.edge, max_hop=max_hop)
+
         self.get_adjacency(strategy)
 
     def __str__(self):
@@ -92,7 +97,7 @@ class Graph:
         adjacency = np.zeros((self.num_node, self.num_node))
         for hop in valid_hop:
             adjacency[self.hop_dis == hop] = 1
-        normalize_adjacency = normalize_digraph(adjacency)
+        normalize_adjacency = normalize_undigraph(adjacency)
 
         if strategy == 'uniform':
             A = np.zeros((1, self.num_node, self.num_node))
@@ -127,15 +132,13 @@ class Graph:
             A = np.stack(A)
             self.A = A
         elif strategy == 'directed':
-            A = np.zeros((len(valid_hop), self.num_node, self.num_node))
-            for i in range(self.num_node):
-                for j in range(self.num_node):
-                    if i > j:
-                        adjacency[i][j] = 0
-            normalize_adjacency = normalize_undigraph(adjacency)
-            for i, hop in enumerate(valid_hop):
-                A[i][self.hop_dis == hop] = normalize_adjacency[self.hop_dis == hop]
+            adjacency = np.zeros((self.num_node, self.num_node))
+            adjacency[self.hop_dis == 1] = 1
+            normalize_adjacency = normalize_digraph(adjacency)
+            A = np.zeros((1, self.num_node, self.num_node))
+            A[0] = normalize_adjacency
             self.A = A
+
         else:
             raise ValueError("Do Not Exist This Strategy")
 
@@ -145,6 +148,23 @@ def get_hop_distance(num_node, edge, max_hop=1):
     for i, j in edge:
         A[j, i] = 1
         A[i, j] = 1
+
+    # compute hop steps
+    hop_dis = np.zeros((num_node, num_node)) + np.inf
+    transfer_mat = [np.linalg.matrix_power(A, d) for d in range(max_hop + 1)]
+    arrive_mat = (np.stack(transfer_mat) > 0)
+    for d in range(max_hop, -1, -1):
+        hop_dis[arrive_mat[d]] = d
+    return hop_dis
+
+
+def get_directed_hop_distance(num_node, edge, max_hop=1):
+    A = np.zeros((num_node, num_node))
+    for i, j in edge:
+        if i < j:
+            A[i, j] = 1
+        else:
+            A[j, i] = 1
 
     # compute hop steps
     hop_dis = np.zeros((num_node, num_node)) + np.inf
