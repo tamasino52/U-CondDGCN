@@ -15,6 +15,7 @@ class Graph:
         - uniform: Uniform Labeling
         - distance: Distance Partitioning
         - spatial: Spatial Configuration
+        - directed: Directed graph configuration
         For more information, please refer to the section 'Partition Strategies'
             in our paper (https://arxiv.org/abs/1801.07455).
         layout (string): must be one of the follow candidates
@@ -217,137 +218,6 @@ class _routing(nn.Module):
         return self.sigmoid(x)
 
 
-class ConvTemporalGraphical(nn.Module):
-    r"""The basic module for applying a graph convolution.
-    Args:
-        in_channels (int): Number of channels in the input sequence data
-        out_channels (int): Number of channels produced by the convolution
-        kernel_size (int): Size of the graph convolving kernel
-        t_kernel_size (int): Size of the temporal convolving kernel
-        t_stride (int, optional): Stride of the temporal convolution. Default: 1
-        t_padding (int, optional): Temporal zero-padding added to both sides of
-            the input. Default: 0
-        t_dilation (int, optional): Spacing between temporal kernel elements.
-            Default: 1
-        bias (bool, optional): If ``True``, adds a learnable bias to the output.
-            Default: ``True``
-    Shape:
-        - Input[0]: Input graph sequence in :math:`(N, in_channels, T_{in}, V)` format
-        - Input[1]: Input graph adjacency matrix in :math:`(K, V, V)` format
-        - Output[0]: Outpu graph sequence in :math:`(N, out_channels, T_{out}, V)` format
-        - Output[1]: Graph adjacency matrix for output data in :math:`(K, V, V)` format
-        where
-            :math:`N` is a batch size,
-            :math:`K` is the spatial kernel size, as :math:`K == kernel_size[1]`,
-            :math:`T_{in}/T_{out}` is a length of input/output sequence,
-            :math:`V` is the number of graph nodes.
-    """
-
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 kernel_size,
-                 t_kernel_size=1,
-                 t_stride=1,
-                 t_padding=0,
-                 t_dilation=1,
-                 bias=True):
-        super().__init__()
-
-        self.kernel_size = kernel_size
-        self.conv = nn.Conv2d(
-            in_channels,
-            out_channels * kernel_size,
-            kernel_size=(t_kernel_size, 1),
-            padding=(t_padding, 0),
-            stride=(t_stride, 1),
-            dilation=(t_dilation, 1),
-            bias=bias)
-
-    def forward(self, x, A):
-
-        x = self.conv(x)
-
-        n, kc, t, v = x.size()
-        x = x.view(n, self.kernel_size, kc // self.kernel_size, t, v)
-        if len(A.shape) < 4:
-            x = torch.einsum('nkctv,kvw->nctw', (x, A))
-        else:
-            x = torch.einsum('nkctv,nkvw->nctw', (x, A))
-        return x.contiguous(), A
-
-
-class ConditionalConvTemporalGraphical(nn.Module):
-    r"""The basic module for applying a graph convolution.
-    Args:
-        in_channels (int): Number of channels in the input sequence data
-        out_channels (int): Number of channels produced by the convolution
-        kernel_size (int): Size of the graph convolving kernel
-        t_kernel_size (int): Size of the temporal convolving kernel
-        t_stride (int, optional): Stride of the temporal convolution. Default: 1
-        t_padding (int, optional): Temporal zero-padding added to both sides of
-            the input. Default: 0
-        t_dilation (int, optional): Spacing between temporal kernel elements.
-            Default: 1
-        bias (bool, optional): If ``True``, adds a learnable bias to the output.
-            Default: ``True``
-    Shape:
-        - Input[0]: Input graph sequence in :math:`(N, in_channels, T_{in}, V)` format
-        - Input[1]: Input graph adjacency matrix in :math:`(K, V, V)` format
-        - Output[0]: Outpu graph sequence in :math:`(N, out_channels, T_{out}, V)` format
-        - Output[1]: Graph adjacency matrix for output data in :math:`(K, V, V)` format
-        where
-            :math:`N` is a batch size,
-            :math:`K` is the spatial kernel size, as :math:`K == kernel_size[1]`,
-            :math:`T_{in}/T_{out}` is a length of input/output sequence,
-            :math:`V` is the number of graph nodes.
-    """
-
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 kernel_size,
-                 t_kernel_size=1,
-                 t_stride=1,
-                 t_padding=0,
-                 t_dilation=1,
-                 num_node=17,
-                 bias=True):
-        super().__init__()
-
-        self.kernel_size = kernel_size
-        self.conv = nn.Conv2d(
-            in_channels,
-            out_channels * kernel_size,
-            kernel_size=(t_kernel_size, 1),
-            padding=(t_padding, 0),
-            stride=(t_stride, 1),
-            dilation=(t_dilation, 1),
-            bias=bias)
-
-        self.cond_gcn = ConvTemporalGraphical(
-            out_channels,
-            out_channels,
-            kernel_size,
-            t_kernel_size=1,
-            t_stride=1,
-            t_padding=0,
-            t_dilation=1,
-            bias=True)
-
-    def forward(self, x, A, E):
-        assert A.size(0) == self.kernel_size
-
-        x = self.conv(x)
-        n, kc, t, v = x.size()
-        x = x.view(n, self.kernel_size, kc // self.kernel_size, t, v)
-        x = torch.einsum('nkctv,kvw->nctw', (x, A))
-
-        x, _ = self.cond_gcn(x, E)
-
-        return x.contiguous(), A
-
-
 class st_gcn(nn.Module):
     r"""Applies a spatial temporal graph convolution over an input graph sequence.
     Args:
@@ -356,7 +226,7 @@ class st_gcn(nn.Module):
         kernel_size (tuple): Size of the temporal convolving kernel and graph convolving kernel
         stride (int, optional): Stride of the temporal convolution. Default: 1
         dropout (int, optional): Dropout rate of the final output. Default: 0
-        residual (bool, optional): If ``True``, applies a residual mechanism. Default: ``True``
+        graph (Graph, optional): graph class
     Shape:
         - Input[0]: Input graph sequence in :math:`(N, in_channels, T_{in}, V)` format
         - Input[1]: Input graph adjacency matrix in :math:`(K, V, V)` format
@@ -383,14 +253,23 @@ class st_gcn(nn.Module):
         padding = ((kernel_size[0] - 1) // 2, 0)
 
         self.graph = graph
+        self.num_node = self.graph.num_node
         A = torch.tensor(self.graph.A, dtype=torch.float32, requires_grad=False)
         self.register_buffer('A', A)
 
         self.source_nodes = self.graph.source_nodes
         self.target_nodes = self.graph.target_nodes
 
-        self.dgconv1 = nn.Conv2d(in_channels * 3, in_channels, 1)
-        self.dgconv2 = nn.Conv2d(in_channels * 3, in_channels, 1)
+        self.w1 = Parameter(torch.Tensor(1, 3), requires_grad=True)
+        self.w2 = Parameter(torch.Tensor(1, 3), requires_grad=True)
+        self.b1 = Parameter(torch.Tensor(1, in_channels), requires_grad=True)
+        self.b2 = Parameter(torch.Tensor(1, in_channels), requires_grad=True)
+        self.relu = nn.ReLU(inplace=True)
+
+        nn.init.xavier_uniform_(self.w1)
+        nn.init.xavier_uniform_(self.w2)
+        nn.init.xavier_uniform_(self.b1)
+        nn.init.xavier_uniform_(self.b2)
 
         self.tcn1 = nn.Sequential(
             nn.BatchNorm2d(in_channels),
@@ -423,13 +302,16 @@ class st_gcn(nn.Module):
     def forward(self, x, e):
 
         # node update
-        x = torch.cat([torch.matmul(e, self.A[0, 1:]), x, torch.matmul(e, self.A[2, 1:])], dim=1)
-        x = self.dgconv1(x)
+        node = torch.stack([torch.matmul(e, self.A[0, 1:]), x, torch.matmul(e, self.A[2, 1:])], dim=1)
+        x = torch.einsum('ek, nkctv->nctv', (self.w1, node)) + self.b1[:, :, None, None]
+        x = self.relu(x)
 
         # edge update
-        e = torch.cat([x[..., self.source_nodes], e, x[..., self.target_nodes]], dim=1)
-        e = self.dgconv2(e)
+        edge = torch.stack([x[..., self.source_nodes], e, x[..., self.target_nodes]], dim=1)
+        e = torch.einsum('ek, nkctv->nctv', (self.w2, edge)) + self.b2[:, :, None, None]
+        e = self.relu(e)
 
+        # temporal convolution
         x = self.tcn1(x)
         e = self.tcn2(e)
 
@@ -444,7 +326,8 @@ class cond_st_gcn(nn.Module):
         kernel_size (tuple): Size of the temporal convolving kernel and graph convolving kernel
         stride (int, optional): Stride of the temporal convolution. Default: 1
         dropout (int, optional): Dropout rate of the final output. Default: 0
-        residual (bool, optional): If ``True``, applies a residual mechanism. Default: ``True``
+        num_experts (int, optional): Number of predicted conditional connection matrix
+        graph (Graph, optional): graph class
     Shape:
         - Input[0]: Input graph sequence in :math:`(N, in_channels, T_{in}, V)` format
         - Input[1]: Input graph adjacency matrix in :math:`(K, V, V)` format
@@ -484,9 +367,20 @@ class cond_st_gcn(nn.Module):
         self.weight = Parameter(torch.Tensor(num_experts, self.num_node, self.num_node), requires_grad=True)
         nn.init.xavier_uniform_(self.weight)
 
-        self.dgconv1 = nn.Conv2d(in_channels * 3, in_channels, 1)
-        self.dgconv2 = nn.Conv2d(in_channels * 3, in_channels, 1)
-        self.dgconv3 = nn.Conv2d(in_channels * 3, in_channels, 1)
+        self.w1 = Parameter(torch.Tensor(1, 3), requires_grad=True)
+        self.w2 = Parameter(torch.Tensor(1, 3), requires_grad=True)
+        self.w3 = Parameter(torch.Tensor(1, 3), requires_grad=True)
+        self.b1 = Parameter(torch.Tensor(1, in_channels), requires_grad=True)
+        self.b2 = Parameter(torch.Tensor(1, in_channels), requires_grad=True)
+        self.b3 = Parameter(torch.Tensor(1, in_channels), requires_grad=True)
+        self.relu = nn.ReLU(inplace=True)
+
+        nn.init.xavier_uniform_(self.w1)
+        nn.init.xavier_uniform_(self.w2)
+        nn.init.xavier_uniform_(self.w3)
+        nn.init.xavier_uniform_(self.b1)
+        nn.init.xavier_uniform_(self.b2)
+        nn.init.xavier_uniform_(self.b3)
 
         self.tcn1 = nn.Sequential(
             nn.BatchNorm2d(in_channels),
@@ -516,37 +410,31 @@ class cond_st_gcn(nn.Module):
             nn.Dropout(dropout, inplace=True),
         )
 
-        self.relu = nn.ReLU(inplace=False)
-
     def forward(self, x, e):
 
         # node update
-        node = torch.cat([torch.matmul(e, self.A[0, 1:]), x, torch.matmul(e, self.A[2, 1:])], dim=1)
-        x = self.dgconv1(node)
+        node = torch.stack([torch.matmul(e, self.A[0, 1:]), x, torch.matmul(e, self.A[2, 1:])], dim=1)
+        x = torch.einsum('ek, nkctv->nctv', (self.w1, node)) + self.b1[:, :, None, None]
+        x = self.relu(x)
 
         # conditional node update
         pooled_inputs = self._avg_pooling(x)
         routing_weights = self._routing_fn(pooled_inputs)
         cond_e = torch.sum(routing_weights[:, :, None, None] * self.weight, 1, keepdim=True)
+        cond_edge = torch.stack([
+            torch.matmul(x, F.normalize(F.relu(cond_e), p=1, dim=2)), x,
+            torch.matmul(x, F.normalize(F.relu(-cond_e), p=1, dim=2))], dim=1)
 
-        parent = torch.count_nonzero(self.relu(cond_e), dim=2)
-        parent[parent == 0] = 1.
-        parent = self.relu(cond_e) / parent[:, :, None, :]
-
-        child = torch.count_nonzero(self.relu(-cond_e), dim=2)
-        child[child == 0] = 1.
-        child = self.relu(-cond_e) / child[:, :, None, :]
-
-        x = torch.cat([torch.matmul(x, parent), x, torch.matmul(x, child)], dim=1)
-        x = self.dgconv2(x)
+        x = torch.einsum('ek, nkctv->nctv', (self.w2, cond_edge)) + self.b2[:, :, None, None]
+        x = self.relu(x)
 
         # edge update
-        e = torch.cat([x[..., self.source_nodes], e, x[..., self.target_nodes]], dim=1)
-        e = self.dgconv3(e)
+        edge = torch.stack([x[..., self.source_nodes], e, x[..., self.target_nodes]], dim=1)
+        e = torch.einsum('ek, nkctv->nctv', (self.w3, edge)) + self.b3[:, :, None, None]
+        e = self.relu(e)
 
+        # temporal convolution
         x = self.tcn1(x)
         e = self.tcn2(e)
 
         return x, e
-
-# 256 1 17 17 torch.count_non_zero(cond_e, dim=2)
