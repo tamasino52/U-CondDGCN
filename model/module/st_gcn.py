@@ -482,7 +482,7 @@ class cond_st_gcn(nn.Module):
         self._avg_pooling = functools.partial(F.adaptive_avg_pool2d, output_size=(1, 1))
         self._routing_fn = _routing(in_channels, num_experts, dropout)
         self.weight = Parameter(torch.Tensor(num_experts, self.num_node, self.num_node), requires_grad=True)
-        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        nn.init.xavier_uniform_(self.weight)
 
         self.dgconv1 = nn.Conv2d(in_channels * 3, in_channels, 1)
         self.dgconv2 = nn.Conv2d(in_channels * 3, in_channels, 1)
@@ -528,13 +528,14 @@ class cond_st_gcn(nn.Module):
         pooled_inputs = self._avg_pooling(x)
         routing_weights = self._routing_fn(pooled_inputs)
         cond_e = torch.sum(routing_weights[:, :, None, None] * self.weight, 1, keepdim=True)
-        cond_e = cond_e * (1 - self.A[1])
-        parent = self.relu(cond_e).clone()
-        parent[parent > 0] = 1
-        parent = parent * (torch.sum(parent, dim=2, keepdim=True) ** (-1))
-        child = self.relu(-cond_e).clone()
-        child[child > 0] = 1
-        child = child * (torch.sum(child, dim=2, keepdim=True) ** (-1))
+
+        parent = torch.count_nonzero(self.relu(cond_e), dim=2)
+        parent[parent == 0] = 1.
+        parent = self.relu(cond_e) / parent[:, :, None, :]
+
+        child = torch.count_nonzero(self.relu(-cond_e), dim=2)
+        child[child == 0] = 1.
+        child = self.relu(-cond_e) / child[:, :, None, :]
 
         x = torch.cat([torch.matmul(x, parent), x, torch.matmul(x, child)], dim=1)
         x = self.dgconv2(x)
@@ -547,3 +548,5 @@ class cond_st_gcn(nn.Module):
         e = self.tcn2(e)
 
         return x, e
+
+# 256 1 17 17 torch.count_non_zero(cond_e, dim=2)
