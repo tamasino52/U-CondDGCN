@@ -303,12 +303,16 @@ class st_gcn(nn.Module):
     def forward(self, x, e):
 
         # node update
-        node = torch.cat([torch.matmul(e, self.A[0, 1:]), x, torch.matmul(e, self.A[2, 1:])], dim=1)
+        node = torch.cat([
+            torch.matmul(e, self.A[0, 1:]), x,
+            torch.matmul(e, self.A[2, 1:])], dim=1)
         x = self.conv1(node)
 
         # edge update
-        edge = torch.cat([x[..., self.source_nodes], e, x[..., self.target_nodes]], dim=1)
-        x = self.conv1(node)
+        edge = torch.cat([
+            x[..., self.source_nodes], e,
+            x[..., self.target_nodes]], dim=1)
+        x = self.conv2(edge)
 
         # temporal convolution
         x = self.tcn1(x)
@@ -417,7 +421,9 @@ class cond_st_gcn(nn.Module):
     def forward(self, x, e):
 
         # node update
-        node = torch.cat([torch.matmul(e, self.A[0, 1:]), x, torch.matmul(e, self.A[2, 1:])], dim=1)
+        node = torch.cat([
+            torch.matmul(e, self.A[0, 1:]), x,
+            torch.matmul(e, self.A[2, 1:])], dim=1)
         x = self.conv1(node)
 
         # conditional node update
@@ -430,7 +436,9 @@ class cond_st_gcn(nn.Module):
         x = self.conv2(cond_edge)
 
         # edge update
-        edge = torch.cat([x[..., self.source_nodes], e, x[..., self.target_nodes]], dim=1)
+        edge = torch.cat([
+            x[..., self.source_nodes], e,
+            x[..., self.target_nodes]], dim=1)
         x = self.conv3(edge)
 
         # temporal convolution
