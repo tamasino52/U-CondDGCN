@@ -130,7 +130,7 @@ def input_augmentation(input_2D, model):
 
 
 if __name__ == '__main__':
-    opt.manualSeed = 4321
+    opt.manualSeed = 4212
     random.seed(opt.manualSeed)
     torch.manual_seed(opt.manualSeed)
 
