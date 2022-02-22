@@ -27,7 +27,7 @@ class Model(nn.Module):
         self.data_bn = nn.BatchNorm1d(self.in_channels * A.size(1))
 
         self.down_stage = nn.ModuleList((
-            st_gcn(self.in_channels, 16, kernel_size, 1, graph=self.graph),
+            st_gcn(self.in_channels, 16, kernel_size, 1, dropout, graph=self.graph),
             nn.ModuleList((
                 st_gcn(16, 32, kernel_size, 2,  dropout, graph=self.graph),
                 st_gcn(32, 32, kernel_size, 1, dropout, graph=self.graph),
@@ -83,7 +83,7 @@ class Model(nn.Module):
             )),
         ))
 
-        self.head = nn.Conv1d(16*self.n_joints, self.n_joints*self.out_channels, kernel_size=1)
+        self.head = nn.Conv2d(16, self.out_channels, kernel_size=1)
 
     def forward(self, x):
         # data normalization
@@ -95,7 +95,7 @@ class Model(nn.Module):
         x = x.permute(0, 1, 3, 4, 2).contiguous()
         x = x.view(N * M, C, T, V)
 
-        e = x[..., self.source_nodes] - x[...,self.target_nodes]
+        e = x[..., self. source_nodes] - x[..., self.target_nodes]
 
         # down stage
         x_d0, e_d0 = self.down_stage[0](x, e)
@@ -127,8 +127,5 @@ class Model(nn.Module):
         x_m2, e_m2 = self.merge_stage[2][1](x_m2), self.merge_stage[2][1](e_m2)
 
         x, e = self.merge_stage[0](x_u0 + x_d0 + x_m2 + x_m3 + x_m4, e_u0 + e_d0 + e_m2 + e_m3 + e_m4)
-
-        x = x.permute(0, 1, 3, 2).contiguous().view(N, -1, T)
         x = self.head(x)
-        x = x.view(N, -1, V, T).permute(0, 1, 3, 2).contiguous()
         return x.unsqueeze(dim=-1)

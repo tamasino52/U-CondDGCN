@@ -37,12 +37,9 @@ class Graph:
 
         self.get_edge(layout)
         if strategy == 'directed':
-            self.hop_dis = get_directed_hop_distance(
-                self.num_node, self.edge, max_hop=max_hop)
+            self.hop_dis = get_directed_hop_distance(self.num_node, self.edge, max_hop=max_hop)
         else:
-            self.hop_dis = get_hop_distance(
-                self.num_node, self.edge, max_hop=max_hop)
-
+            self.hop_dis = get_hop_distance(self.num_node, self.edge, max_hop=max_hop)
         self.get_adjacency(strategy)
 
     def __str__(self):
@@ -143,7 +140,6 @@ class Graph:
             A[1] = normalize_digraph(adjacency[1])
             A[2] = normalize_digraph(adjacency[0].T)
             self.A = A
-
         else:
             raise ValueError("Do Not Exist This Strategy")
 
@@ -202,6 +198,89 @@ def normalize_undigraph(A):
     return DAD
 
 
+class ConvTemporalGraphical(nn.Module):
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 kernel_size,
+                 t_kernel_size=1,
+                 t_stride=1,
+                 t_padding=0,
+                 t_dilation=1,
+                 bias=True):
+        super().__init__()
+
+        self.kernel_size = kernel_size
+        self.conv = nn.Conv2d(
+            in_channels,
+            out_channels * kernel_size,
+            kernel_size=(t_kernel_size, 1),
+            padding=(t_padding, 0),
+            stride=(t_stride, 1),
+            dilation=(t_dilation, 1),
+            bias=bias)
+
+    def forward(self, x, A):
+        assert A.size(0) == self.kernel_size
+
+        x = self.conv(x)
+
+        n, kc, t, v = x.size()
+        x = x.view(n, self.kernel_size, kc//self.kernel_size, t, v)
+        x = torch.einsum('nkctv,kvw->nctw', (x, A))
+
+        return x.contiguous(), A
+
+
+class ConditionalConvTemporalGraphical(nn.Module):
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 kernel_size,
+                 t_kernel_size=1,
+                 t_stride=1,
+                 t_padding=0,
+                 t_dilation=1,
+                 num_node=17,
+                 bias=True):
+        super().__init__()
+
+        self.E = torch.nn.Parameter(torch.FloatTensor(1, num_node, num_node), requires_grad=True)
+
+        self.kernel_size = kernel_size
+        self.conv = nn.Conv2d(
+            in_channels,
+            out_channels * kernel_size,
+            kernel_size=(t_kernel_size, 1),
+            padding=(t_padding, 0),
+            stride=(t_stride, 1),
+            dilation=(t_dilation, 1),
+            bias=bias)
+
+        self.cond_gcn = ConvTemporalGraphical(
+            in_channels,
+            out_channels,
+            kernel_size=1,
+            t_kernel_size=1,
+            t_stride=1,
+            t_padding=0,
+            t_dilation=1,
+            bias=True)
+
+    def forward(self, x, A):
+        assert A.size(0) == self.kernel_size
+
+        x = self.conv(x)
+
+        n, kc, t, v = x.size()
+        x = x.view(n, self.kernel_size, kc//self.kernel_size, t, v)
+        x = torch.einsum('nkctv,kvw->nctw', (x, A))
+
+        x, _ = self.cond_gcn(x, self.E)
+
+        return x.contiguous(), A
+
+
 class _routing(nn.Module):
 
     def __init__(self, in_channels, num_experts, dropout_rate):
@@ -244,7 +323,7 @@ class st_gcn(nn.Module):
                  out_channels,
                  kernel_size,
                  stride=1,
-                 dropout=0,
+                 dropout=0.3,
                  graph=Graph()):
         super().__init__()
 
@@ -256,20 +335,21 @@ class st_gcn(nn.Module):
         self.num_node = self.graph.num_node
         A = torch.tensor(self.graph.A, dtype=torch.float32, requires_grad=False)
         self.register_buffer('A', A)
+        self.kernel_size = kernel_size
 
         self.source_nodes = self.graph.source_nodes
         self.target_nodes = self.graph.target_nodes
 
         self.conv1 = nn.Sequential(
-            nn.Conv2d(3 * in_channels, in_channels, kernel_size=1),
-            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels, self.kernel_size[1] * in_channels, kernel_size=1),
             nn.Dropout(dropout, inplace=True),
+            nn.ReLU(inplace=True),
         )
 
         self.conv2 = nn.Sequential(
-            nn.Conv2d(3 * in_channels, in_channels, kernel_size=1),
-            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels, self.kernel_size[1] * in_channels, kernel_size=1),
             nn.Dropout(dropout, inplace=True),
+            nn.ReLU(inplace=True),
         )
 
         self.tcn1 = nn.Sequential(
@@ -302,19 +382,25 @@ class st_gcn(nn.Module):
 
     def forward(self, x, e):
 
+        x = self.conv1(x)
+        n, kc, t, v = x.size()
+        x = x.view(n, 3, kc//3, t, v)
+        e = self.conv2(e)
+        n, kc, t, v = e.size()
+        e = e.view(n, 3, kc//3, t, v)
+
         # node update
-        node = torch.cat([
-            torch.matmul(e, self.A[0, 1:]), x,
-            torch.matmul(e, self.A[2, 1:])], dim=1)
-        x = self.conv1(node)
+        x = torch.stack([torch.matmul(e[:, 0], self.A[0, 1:]), x[:, 1], torch.matmul(e[:, 2], self.A[2, 1:])], dim=1)
 
         # edge update
-        edge = torch.cat([
-            x[..., self.source_nodes], e,
-            x[..., self.target_nodes]], dim=1)
-        x = self.conv2(edge)
+        e = torch.stack([x[:, 0, :, :, self.source_nodes], e[:, 1], x[:, 2, :, :, self.target_nodes]], dim=1)
+        e[..., 0] = 0.
+        #e = torch.einsum('nkctv,kvw->nkctw', (edge, self.A.T))
 
         # temporal convolution
+        x = torch.sum(x, dim=1)
+        e = torch.sum(e, dim=1)
+
         x = self.tcn1(x)
         e = self.tcn2(e)
 
@@ -371,21 +457,15 @@ class cond_st_gcn(nn.Module):
         nn.init.xavier_uniform_(self.weight)
 
         self.conv1 = nn.Sequential(
-            nn.Conv2d(3 * in_channels, in_channels, kernel_size=1),
-            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels, 3*in_channels, kernel_size=1),
             nn.Dropout(dropout, inplace=True),
+            nn.ReLU(inplace=True),
         )
 
         self.conv2 = nn.Sequential(
-            nn.Conv2d(3 * in_channels, in_channels, kernel_size=1),
-            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels, 3*in_channels, kernel_size=1),
             nn.Dropout(dropout, inplace=True),
-        )
-
-        self.conv3 = nn.Sequential(
-            nn.Conv2d(3 * in_channels, in_channels, kernel_size=1),
             nn.ReLU(inplace=True),
-            nn.Dropout(dropout, inplace=True),
         )
 
         self.tcn1 = nn.Sequential(
@@ -419,29 +499,31 @@ class cond_st_gcn(nn.Module):
         self.dropout = nn.Dropout(dropout, inplace=True)
 
     def forward(self, x, e):
+        c = x.clone()
+        x = self.conv1(x)
+        n, kc, t, v = x.size()
+        x = x.view(n, 3, kc//3, t, v)
+        e = self.conv2(e)
+        n, kc, t, v = e.size()
+        e = e.view(n, 3, kc//3, t, v)
 
         # node update
-        node = torch.cat([
-            torch.matmul(e, self.A[0, 1:]), x,
-            torch.matmul(e, self.A[2, 1:])], dim=1)
-        x = self.conv1(node)
+        x = torch.stack([torch.matmul(e[:, 0], self.A[0, 1:]), x[:, 1], torch.matmul(e[:, 2], self.A[2, 1:])], dim=1)
+        #x = torch.einsum('nkctv,kvw->nkctw', (node, self.A))
 
         # conditional node update
-        pooled_inputs = self._avg_pooling(x)
+        pooled_inputs = self._avg_pooling(c)
         routing_weights = self._routing_fn(pooled_inputs)
         cond_e = torch.sum(routing_weights[:, :, None, None] * self.weight, 1, keepdim=True)
-        cond_edge = torch.cat([
-            torch.matmul(x, F.normalize(F.relu(cond_e), p=1, dim=2)), x,
-            torch.matmul(x, F.normalize(F.relu(-cond_e), p=1, dim=2))], dim=1)
-        x = self.conv2(cond_edge)
+        cond_e = torch.cat([F.relu(cond_e), self.A[None, 1:2].repeat(n, 1, 1, 1), F.relu(-cond_e)], dim=1)
+        x = torch.einsum('nkctv,nkvw->nkctw', (x, cond_e))
 
         # edge update
-        edge = torch.cat([
-            x[..., self.source_nodes], e,
-            x[..., self.target_nodes]], dim=1)
-        x = self.conv3(edge)
+        e = torch.stack([x[:, 0, :, :, self.source_nodes], e[:, 1], x[:, 2, :, :, self.target_nodes]], dim=1)
 
         # temporal convolution
+        x = torch.sum(x, dim=1)
+        e = torch.sum(e, dim=1)
         x = self.tcn1(x)
         e = self.tcn2(e)
 
