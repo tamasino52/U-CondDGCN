@@ -323,8 +323,9 @@ class st_gcn(nn.Module):
                  out_channels,
                  kernel_size,
                  stride=1,
-                 dropout=0.3,
-                 graph=Graph()):
+                 dropout=0.,
+                 graph=Graph(),
+                 residual=True):
         super().__init__()
 
         assert len(kernel_size) == 2
@@ -380,7 +381,28 @@ class st_gcn(nn.Module):
             nn.Dropout(dropout, inplace=True),
         )
 
+        self.relu = nn.ReLU(inplace=True)
+
+        if not residual:
+            self.residual = lambda x: 0
+
+        elif (in_channels == out_channels) and (stride == 1):
+            self.residual = lambda x: x
+
+        else:
+            self.residual = nn.Sequential(
+                nn.Conv2d(
+                    in_channels,
+                    out_channels,
+                    kernel_size=1,
+                    stride=(stride, 1)),
+                nn.BatchNorm2d(out_channels),
+            )
+
     def forward(self, x, e):
+
+        res_x = self.residual(x)
+        res_e = self.residual(e)
 
         x = self.conv1(x)
         n, kc, t, v = x.size()
@@ -401,10 +423,10 @@ class st_gcn(nn.Module):
         x = torch.sum(x, dim=1)
         e = torch.sum(e, dim=1)
 
-        x = self.tcn1(x)
-        e = self.tcn2(e)
+        x = self.tcn1(x) + res_x
+        e = self.tcn2(e) + res_e
 
-        return x, e
+        return self.relu(x), self.relu(e)
 
 
 class cond_st_gcn(nn.Module):
@@ -436,7 +458,8 @@ class cond_st_gcn(nn.Module):
                  stride=1,
                  dropout=0.,
                  num_experts=16,
-                 graph=Graph()):
+                 graph=Graph(),
+                 residual=True):
         super().__init__()
 
         assert len(kernel_size) == 2
@@ -496,9 +519,28 @@ class cond_st_gcn(nn.Module):
             nn.Dropout(dropout, inplace=True),
         )
 
-        self.dropout = nn.Dropout(dropout, inplace=True)
+        self.relu = nn.ReLU(inplace=True)
+
+        if not residual:
+            self.residual = lambda x: 0
+
+        elif (in_channels == out_channels) and (stride == 1):
+            self.residual = lambda x: x
+
+        else:
+            self.residual = nn.Sequential(
+                nn.Conv2d(
+                    in_channels,
+                    out_channels,
+                    kernel_size=1,
+                    stride=(stride, 1)),
+                nn.BatchNorm2d(out_channels),
+            )
 
     def forward(self, x, e):
+        res_x = self.residual(x)
+        res_e = self.residual(e)
+
         c = x.clone()
         x = self.conv1(x)
         n, kc, t, v = x.size()
@@ -524,7 +566,7 @@ class cond_st_gcn(nn.Module):
         # temporal convolution
         x = torch.sum(x, dim=1)
         e = torch.sum(e, dim=1)
-        x = self.tcn1(x)
-        e = self.tcn2(e)
+        x = self.tcn1(x) + res_x
+        e = self.tcn2(e) + res_e
 
-        return x, e
+        return self.relu(x), self.relu(e)

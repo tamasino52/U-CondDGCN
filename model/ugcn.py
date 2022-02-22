@@ -27,7 +27,7 @@ class Model(nn.Module):
         self.data_bn = nn.BatchNorm1d(self.in_channels * A.size(1))
 
         self.down_stage = nn.ModuleList((
-            st_gcn(self.in_channels, 16, kernel_size, 1, dropout, graph=self.graph),
+            st_gcn(self.in_channels, 16, kernel_size, 1, dropout, graph=self.graph, residual=False),
             nn.ModuleList((
                 st_gcn(16, 32, kernel_size, 2,  dropout, graph=self.graph),
                 st_gcn(32, 32, kernel_size, 1, dropout, graph=self.graph),
