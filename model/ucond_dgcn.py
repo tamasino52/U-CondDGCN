@@ -83,7 +83,10 @@ class Model(nn.Module):
             )),
         ))
 
-        self.head = nn.Conv2d(16, self.out_channels, kernel_size=1)
+        self.head = nn.Sequential(
+            nn.BatchNorm2d(16, momentum=1),
+            nn.Conv2d(16, 3, kernel_size=1),
+        )
 
     def forward(self, x):
         # data normalization

@@ -342,13 +342,19 @@ class st_gcn(nn.Module):
         self.target_nodes = self.graph.target_nodes
 
         self.conv1 = nn.Sequential(
-            nn.Conv2d(in_channels, self.kernel_size[1] * in_channels, kernel_size=1),
+            nn.Conv2d(in_channels,
+                      3 * in_channels,
+                      kernel_size=(kernel_size[0], 1),
+                      padding=padding),
             nn.Dropout(dropout, inplace=True),
             nn.ReLU(inplace=True),
         )
 
         self.conv2 = nn.Sequential(
-            nn.Conv2d(in_channels, self.kernel_size[1] * in_channels, kernel_size=1),
+            nn.Conv2d(in_channels,
+                      3 * in_channels,
+                      kernel_size=(kernel_size[0], 1),
+                      padding=padding),
             nn.Dropout(dropout, inplace=True),
             nn.ReLU(inplace=True),
         )
@@ -401,8 +407,8 @@ class st_gcn(nn.Module):
 
     def forward(self, x, e):
 
-        res_x = self.residual(x)
-        res_e = self.residual(e)
+        res_x = self.residual(x.clone())
+        res_e = self.residual(e.clone())
 
         x = self.conv1(x)
         n, kc, t, v = x.size()
@@ -416,7 +422,6 @@ class st_gcn(nn.Module):
 
         # edge update
         e = torch.stack([x[:, 0, :, :, self.source_nodes], e[:, 1], x[:, 2, :, :, self.target_nodes]], dim=1)
-        e[..., 0] = 0.
         #e = torch.einsum('nkctv,kvw->nkctw', (edge, self.A.T))
 
         # temporal convolution
@@ -480,13 +485,13 @@ class cond_st_gcn(nn.Module):
         nn.init.xavier_uniform_(self.weight)
 
         self.conv1 = nn.Sequential(
-            nn.Conv2d(in_channels, 3*in_channels, kernel_size=1),
+            nn.Conv2d(in_channels, 3*in_channels, kernel_size=(kernel_size[0], 1), padding=padding),
             nn.Dropout(dropout, inplace=True),
             nn.ReLU(inplace=True),
         )
 
         self.conv2 = nn.Sequential(
-            nn.Conv2d(in_channels, 3*in_channels, kernel_size=1),
+            nn.Conv2d(in_channels, 3*in_channels, kernel_size=(kernel_size[0], 1), padding=padding),
             nn.Dropout(dropout, inplace=True),
             nn.ReLU(inplace=True),
         )

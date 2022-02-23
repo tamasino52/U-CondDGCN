@@ -18,7 +18,7 @@ from common.opt import opts
 from common.utils import *
 from common.load_data_hm36 import Fusion
 from common.h36m_dataset import Human36mDataset
-from model.ugcn import Model
+from model.ucond_dgcn import Model
 
 opt = opts().parse()
 os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu
@@ -84,21 +84,27 @@ def step(split, opt, actions, dataLoader, model, optimizer=None, epoch=None):
         loss_np = loss.detach().cpu().numpy()
         loss_all['loss'].update(loss_np * N, N)
 
-        # loss prompting
-        t.set_description('Loss({0:,.4f})'.format(loss_np))
-        t.refresh()
-
         if split == 'train':
             optimizer.zero_grad()
             (loss + opt.alpha * motion_loss).backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1)
             optimizer.step()
 
             pred_out[:, :, 0, :] = 0
             joint_error = mpjpe_cal(pred_out, out_target).item()
             error_sum.update(joint_error*N, N)
+
+            # loss prompting
+            t.set_description('train({0:,.2f})'.format(joint_error * 1000))
+            t.refresh()
+
         elif split == 'test':
             pred_out[:, :, 0, :] = 0
             action_error_sum = test_calculation(pred_out, out_target, action, action_error_sum, opt.dataset, subject)
+
+            # loss prompting
+            t.set_description('test({0:,.4f})'.format(loss))
+            t.refresh()
 
     if split == 'train':
         return loss_all['loss'].avg, error_sum.avg*1000
@@ -171,7 +177,7 @@ if __name__ == '__main__':
     lr = opt.lr
     all_param += list(model.parameters())
 
-    optimizer = optim.AdamW(all_param, lr=opt.lr, weight_decay=opt.weight_decay)
+    optimizer = optim.Adam(all_param, lr=opt.lr, weight_decay=opt.weight_decay)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[80, 90, 100], gamma=opt.lr_decay)
     #scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
 
@@ -194,7 +200,7 @@ if __name__ == '__main__':
                 break
             else:
                 logging.info('epoch: %d, lr: %.7f, loss: %.4f, mpjpe: %.2f' % (epoch, lr, loss, mpjpe))
-                print('e: %d, lr: %.7f, loss: %.4f, mpjpe: %.2f' % (epoch, lr, loss, mpjpe))
+                print('e: %d, lr: %.7f, loss: %.4f, mpjpe: %.2f, error: %.2f' % (epoch, lr, loss, mpjpe, error))
 
         scheduler.step()
 
