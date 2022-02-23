@@ -342,19 +342,13 @@ class st_gcn(nn.Module):
         self.target_nodes = self.graph.target_nodes
 
         self.conv1 = nn.Sequential(
-            nn.Conv2d(in_channels,
-                      3 * in_channels,
-                      kernel_size=(kernel_size[0], 1),
-                      padding=padding),
+            nn.Conv2d(in_channels, 3 * in_channels, kernel_size=1),
             nn.Dropout(dropout, inplace=True),
             nn.ReLU(inplace=True),
         )
 
         self.conv2 = nn.Sequential(
-            nn.Conv2d(in_channels,
-                      3 * in_channels,
-                      kernel_size=(kernel_size[0], 1),
-                      padding=padding),
+            nn.Conv2d(in_channels, 3 * in_channels, kernel_size=1),
             nn.Dropout(dropout, inplace=True),
             nn.ReLU(inplace=True),
         )
@@ -485,13 +479,13 @@ class cond_st_gcn(nn.Module):
         nn.init.xavier_uniform_(self.weight)
 
         self.conv1 = nn.Sequential(
-            nn.Conv2d(in_channels, 3*in_channels, kernel_size=(kernel_size[0], 1), padding=padding),
+            nn.Conv2d(in_channels, 3*in_channels, kernel_size=1),
             nn.Dropout(dropout, inplace=True),
             nn.ReLU(inplace=True),
         )
 
         self.conv2 = nn.Sequential(
-            nn.Conv2d(in_channels, 3*in_channels, kernel_size=(kernel_size[0], 1), padding=padding),
+            nn.Conv2d(in_channels, 3*in_channels, kernel_size=1),
             nn.Dropout(dropout, inplace=True),
             nn.ReLU(inplace=True),
         )
